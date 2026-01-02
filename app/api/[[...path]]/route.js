@@ -1,653 +1,40 @@
 import { NextResponse } from 'next/server'
-import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { createAdminClient } from '@/lib/supabase/admin'
-import { hasPermission, getUserPermissions, logAudit } from '@/lib/permissions'
 
-// CORS helper
-function handleCORS(response) {
-  response.headers.set('Access-Control-Allow-Origin', '*')
-  response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-  return response
+// Lightweight fallback for any unmatched /api/* routes after refactor.
+export async function GET() {
+  return NextResponse.json({ error: 'This API has been refactored. Use specific endpoints under /api' }, { status: 404 })
 }
 
-// Handle OPTIONS
-export async function OPTIONS() {
-  return handleCORS(new NextResponse(null, { status: 204 }))
+export async function POST() {
+  return NextResponse.json({ error: 'This API has been refactored. Use specific endpoints under /api' }, { status: 404 })
 }
 
-// Main GET handler
-export async function GET(request) {
-  const { pathname } = new URL(request.url)
-  const path = pathname.replace('/api', '')
-
-  try {
-    const supabase = await createServerSupabaseClient()
-
-    // Public routes
-    if (path === '/health') {
-      return handleCORS(NextResponse.json({ status: 'ok', timestamp: new Date().toISOString() }))
-    }
-
-    if (path === '/auth/user') {
-      const { data: { user }, error } = await supabase.auth.getUser()
-      
-      if (error || !user) {
-        return handleCORS(NextResponse.json({ user: null }, { status: 401 }))
-      }
-
-      // Get user profile with organization and role
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .select(`
-          *,
-          organization:organizations(id, name, onboarding_status),
-          role:roles(id, name, is_platform_admin)
-        `)
-        .eq('id', user.id)
-        .single()
-
-      // Log error for debugging
-      if (profileError) {
-        console.error('Profile fetch error:', profileError)
-      }
-
-      // Get user permissions
-      const permissions = await getUserPermissions(supabase, user.id)
-
-      return handleCORS(NextResponse.json({
-        user: {
-          id: user.id,
-          email: user.email,
-          profile,
-          profileError: profileError ? profileError.message : null,
-          permissions
-        }
-      }))
-    }
-
-    // Protected routes - require authentication
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    
-    if (authError || !user) {
-      return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
-    }
-
-    // Get user profile
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('*, role:roles(name, is_platform_admin)')
-      .eq('id', user.id)
-      .single()
-
-    // Organizations
-    if (path === '/organizations' || path === '/organizations/') {
-      const { data, error } = await supabase
-        .from('organizations')
-        .select('*')
-        .order('created_at', { ascending: false })
-
-      if (error) throw error
-      return handleCORS(NextResponse.json({ organizations: data || [] }))
-    }
-
-    // Users - requires users.view permission or super admin
-    if (path === '/users' || path === '/users/') {
-      const canView = await hasPermission(supabase, user.id, 'users.create') || 
-                      await hasPermission(supabase, user.id, 'users.edit')
-
-      if (!canView && !profile?.is_platform_admin) {
-        return handleCORS(NextResponse.json({ error: 'Forbidden' }, { status: 403 }))
-      }
-
-      // Get users in same organization
-      const { data, error } = await supabase
-        .from('profiles')
-        .select(`
-          *,
-          organization:organizations(id, name),
-          role:roles(id, name)
-        `)
-        .eq('organization_id', profile.organization_id)
-        .order('created_at', { ascending: false })
-
-      if (error) throw error
-      return handleCORS(NextResponse.json({ users: data || [] }))
-    }
-
-    // Roles
-    if (path === '/roles' || path === '/roles/') {
-      const { data, error } = await supabase
-        .from('roles')
-        .select('*')
-        .eq('is_platform_admin', false)
-        .order('name')
-
-      if (error) throw error
-      return handleCORS(NextResponse.json({ roles: data || [] }))
-    }
-
-    // Features
-    if (path === '/features' || path === '/features/') {
-      const { data, error } = await supabase
-        .from('features')
-        .select('*')
-        .order('category', { ascending: true })
-
-      if (error) throw error
-      return handleCORS(NextResponse.json({ features: data || [] }))
-    }
-
-    // Audit Logs
-    if (path === '/audit' || path === '/audit/' || path.startsWith('/audit?')) {
-      const canView = await hasPermission(supabase, user.id, 'audit.view')
-
-      if (!canView && !profile?.is_platform_admin) {
-        return handleCORS(NextResponse.json({ error: 'Forbidden' }, { status: 403 }))
-      }
-
-      const { searchParams } = new URL(request.url)
-      const limit = parseInt(searchParams.get('limit') || '50')
-
-      let query = supabase
-        .from('audit_logs')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(limit)
-
-      // Filter by organization unless platform admin
-      if (!profile?.is_platform_admin) {
-        const { data: orgUsers } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('organization_id', profile.organization_id)
-
-        const userIds = orgUsers?.map(u => u.id) || []
-        query = query.in('user_id', userIds)
-      }
-
-      const { data, error } = await query
-
-      if (error) throw error
-      return handleCORS(NextResponse.json({ logs: data || [] }))
-    }
-
-    // Get organization profile (for onboarding)
-    if (path === '/organization/profile' || path === '/organization/profile/') {
-      if (profile?.is_platform_admin) {
-        return handleCORS(NextResponse.json({ 
-          error: 'Platform admins cannot access organization profile' 
-        }, { status: 403 }))
-      }
-
-      const { data: orgProfile, error: profileError } = await supabase
-        .from('organization_profiles')
-        .select('*')
-        .eq('organization_id', profile.organization_id)
-        .single()
-
-      // Return empty object if no profile exists yet
-      return handleCORS(NextResponse.json({ 
-        profile: orgProfile || {},
-        organization_id: profile.organization_id
-      }))
-    }
-
-    // ==================== PLATFORM ADMIN ROUTES ====================
-    // Only accessible to users with is_platform_admin = true
-    
-    if (path.startsWith('/platform/')) {
-      // Check platform admin access
-      if (!profile?.is_platform_admin) {
-        return handleCORS(NextResponse.json({ error: 'Platform Admin access required' }, { status: 403 }))
-      }
-
-      // Platform: List all organizations
-      if (path === '/platform/organizations' || path === '/platform/organizations/') {
-        const { data, error } = await supabase
-          .from('organizations')
-          .select(`
-            *,
-            _count:profiles(count),
-            profile:organization_profiles(*)
-          `)
-          .order('created_at', { ascending: false })
-
-        if (error) throw error
-        return handleCORS(NextResponse.json({ organizations: data || [] }))
-      }
-
-      // Platform: Get specific organization details
-      if (path.match(/^\/platform\/organizations\/[a-f0-9-]+$/)) {
-        const orgId = path.split('/').pop()
-
-        const { data: org, error: orgError } = await supabase
-          .from('organizations')
-          .select(`
-            *,
-            profile:organization_profiles(*),
-            users:profiles(
-              id, email, full_name, role:roles(name), created_at
-            )
-          `)
-          .eq('id', orgId)
-          .single()
-
-        if (orgError) throw orgError
-
-        return handleCORS(NextResponse.json({ organization: org }))
-      }
-
-      // Platform: Get platform audit logs
-      if (path === '/platform/audit' || path === '/platform/audit/') {
-        const { searchParams } = new URL(request.url)
-        const limit = parseInt(searchParams.get('limit') || '100')
-
-        const { data, error } = await supabase
-          .from('audit_logs')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(limit)
-
-        if (error) throw error
-        return handleCORS(NextResponse.json({ logs: data || [] }))
-      }
-
-      // Platform: Get impersonation sessions
-      if (path === '/platform/impersonations' || path === '/platform/impersonations/') {
-        const { data, error } = await supabase
-          .from('impersonation_sessions')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(50)
-
-        if (error) throw error
-        return handleCORS(NextResponse.json({ sessions: data || [] }))
-      }
-    }
-
-    return handleCORS(NextResponse.json({ error: 'Not found' }, { status: 404 }))
-
-  } catch (error) {
-    console.error('API Error:', error)
-    return handleCORS(NextResponse.json({ error: error.message }, { status: 500 }))
-  }
+export async function PUT() {
+  return NextResponse.json({ error: 'This API has been refactored. Use specific endpoints under /api' }, { status: 404 })
 }
 
-// Main POST handler
-export async function POST(request) {
-  const { pathname } = new URL(request.url)
-  const path = pathname.replace('/api', '')
+export async function DELETE() {
+  return NextResponse.json({ error: 'This API has been refactored. Use specific endpoints under /api' }, { status: 404 })
+}
+import { NextResponse } from 'next/server'
 
-  try {
-    const supabase = await createServerSupabaseClient()
-    const body = await request.json()
+// This file is a fallback for any unmatched /api/* routes after refactor.
+export async function GET() {
+  return NextResponse.json({ error: 'This API has been refactored. Use specific endpoints under /api' }, { status: 404 })
+}
 
-    // Auth endpoints
-    if (path === '/auth/signup') {
-      const { email, password } = body
+export async function POST() {
+  return NextResponse.json({ error: 'This API has been refactored. Use specific endpoints under /api' }, { status: 404 })
+}
 
-      if (!email || !password) {
-        return handleCORS(NextResponse.json(
-          { error: 'Email and password are required' },
-          { status: 400 }
-        ))
-      }
+export async function PUT() {
+  return NextResponse.json({ error: 'This API has been refactored. Use specific endpoints under /api' }, { status: 404 })
+}
 
-      // Sign up the user - this only creates the auth user
-      // Organization setup happens in /api/onboard
-      const { data: authData, error: signUpError } = await supabase.auth.signUp({
-        email,
-        password,
-      })
+export async function DELETE() {
+  return NextResponse.json({ error: 'This API has been refactored. Use specific endpoints under /api' }, { status: 404 })
+}
 
-      if (signUpError) {
-        return handleCORS(NextResponse.json({ error: signUpError.message }, { status: 400 }))
-      }
-
-      return handleCORS(NextResponse.json({
-        message: 'Signup successful',
-        user: authData.user
-      }))
-    }
-
-    // Onboarding endpoint - creates organization and sets up user profile
-    // This runs AFTER signup and uses SERVICE ROLE for admin operations
-    if (path === '/onboard' || path === '/onboard/') {
-      console.log('🚀 [ONBOARD] Endpoint hit')
-      
-      // Get authenticated user from session
-      const { data: { user }, error: authError } = await supabase.auth.getUser()
-      
-      if (authError || !user) {
-        console.error('❌ [ONBOARD] Auth error:', authError)
-        return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
-      }
-
-      console.log('👤 [ONBOARD] User authenticated:', user.email)
-
-      const { fullName, organizationName } = body
-
-      // Check if user already has an organization (idempotent)
-      const { data: existingProfile } = await supabase
-        .from('profiles')
-        .select('organization_id, full_name')
-        .eq('id', user.id)
-        .single()
-
-      console.log('🔍 [ONBOARD] Existing profile check:', existingProfile)
-
-      if (existingProfile?.organization_id) {
-        console.log('✅ [ONBOARD] User already has organization, skipping')
-        return handleCORS(NextResponse.json({
-          message: 'User already onboarded',
-          alreadyOnboarded: true
-        }))
-      }
-
-      // Use SERVICE ROLE client for admin operations
-      // This bypasses RLS and allows us to create organization and update profile
-      const adminClient = createAdminClient()
-
-      try {
-        console.log('📝 [ONBOARD] Creating organization:', organizationName)
-        
-        // 1. Create organization with PENDING onboarding status
-        const { data: org, error: orgError } = await adminClient
-          .from('organizations')
-          .insert({ 
-            name: organizationName || 'My Organization',
-            onboarding_status: 'PENDING'
-          })
-          .select()
-          .single()
-
-        if (orgError) {
-          console.error('❌ [ONBOARD] Organization creation error:', orgError)
-          throw new Error('Failed to create organization')
-        }
-
-        console.log('✅ [ONBOARD] Organization created:', org.id)
-
-        // 2. Create organization_profile (business profile)
-        console.log('📝 [ONBOARD] Creating organization profile')
-        const { error: orgProfileError } = await adminClient
-          .from('organization_profiles')
-          .insert({
-            organization_id: org.id,
-            sector: 'real_estate', // Default and only enabled sector
-            country: 'India' // Default
-          })
-
-        if (orgProfileError) {
-          console.error('⚠️ [ONBOARD] Organization profile creation error:', orgProfileError)
-          // Don't fail onboarding if org profile fails - can be created later
-        } else {
-          console.log('✅ [ONBOARD] Organization profile created')
-        }
-
-        // 3. Get Client Super Admin role
-        console.log('🔍 [ONBOARD] Fetching Client Super Admin role')
-        const { data: role, error: roleError } = await adminClient
-          .from('roles')
-          .select('id')
-          .eq('name', 'Client Super Admin')
-          .single()
-
-        if (roleError || !role) {
-          console.error('❌ [ONBOARD] Role fetch error:', roleError)
-          throw new Error('Failed to fetch role')
-        }
-
-        console.log('✅ [ONBOARD] Role found:', role.id)
-
-        // 4. Update profile with organization and role
-        console.log('📝 [ONBOARD] Updating user profile')
-        const { error: profileError } = await adminClient
-          .from('profiles')
-          .update({
-            organization_id: org.id,
-            role_id: role.id,
-            full_name: fullName || null,
-            is_platform_admin: false
-          })
-          .eq('id', user.id)
-
-        if (profileError) {
-          console.error('❌ [ONBOARD] Profile update error:', profileError)
-          throw new Error('Failed to update profile')
-        }
-
-        console.log('✅ [ONBOARD] Profile updated successfully')
-
-        // 5. Create audit log entry
-        console.log('📝 [ONBOARD] Creating audit log')
-        await adminClient
-          .from('audit_logs')
-          .insert({
-            user_id: user.id,
-            user_name: fullName || user.email,
-            action: 'ORG_CREATED',
-            entity_type: 'organization',
-            entity_id: org.id,
-            metadata: { 
-              organization_name: org.name,
-              onboarding_status: 'PENDING'
-            },
-            created_at: new Date().toISOString()
-          })
-
-        console.log('🎉 [ONBOARD] Onboarding complete!')
-
-        return handleCORS(NextResponse.json({
-          message: 'Onboarding successful',
-          organization: org,
-          onboarding_status: 'PENDING'
-        }))
-
-      } catch (error) {
-        console.error('💥 [ONBOARD] Fatal error:', error)
-        return handleCORS(NextResponse.json(
-          { error: error.message || 'Onboarding failed' },
-          { status: 500 }
-        ))
-      }
-    }
-
-    if (path === '/auth/signin') {
-      const { email, password, isPlatformAdmin } = body
-
-      if (!email || !password) {
-        return handleCORS(NextResponse.json(
-          { error: 'Email and password are required' },
-          { status: 400 }
-        ))
-      }
-
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      })
-
-      if (error) {
-        return handleCORS(NextResponse.json({ error: error.message }, { status: 401 }))
-      }
-
-      // Check if platform admin login
-      if (isPlatformAdmin) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('is_platform_admin')
-          .eq('id', data.user.id)
-          .single()
-
-        if (!profile?.is_platform_admin) {
-          await supabase.auth.signOut()
-          return handleCORS(NextResponse.json(
-            { error: 'Not authorized as platform admin' },
-            { status: 403 }
-          ))
-        }
-      }
-
-      return handleCORS(NextResponse.json({
-        message: 'Login successful',
-        user: data.user,
-        session: data.session
-      }))
-    }
-
-    if (path === '/auth/signout') {
-      const { error } = await supabase.auth.signOut()
-      
-      if (error) {
-        return handleCORS(NextResponse.json({ error: error.message }, { status: 400 }))
-      }
-
-      return handleCORS(NextResponse.json({ message: 'Signed out successfully' }))
-    }
-
-    // Protected routes
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    
-    if (authError || !user) {
-      return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
-    }
-
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('*, role:roles(name)')
-      .eq('id', user.id)
-      .single()
-
-    // Create user
-    if (path === '/users' || path === '/users/') {
-      const canCreate = await hasPermission(supabase, user.id, 'users.create')
-
-      if (!canCreate && !profile?.is_platform_admin) {
-        return handleCORS(NextResponse.json({ error: 'Forbidden' }, { status: 403 }))
-      }
-
-      const { email, password, fullName, roleId } = body
-
-      if (!email || !password || !roleId) {
-        return handleCORS(NextResponse.json(
-          { error: 'Email, password, and role are required' },
-          { status: 400 }
-        ))
-      }
-
-      // Create auth user
-      const { data: newUser, error: createError } = await supabase.auth.admin.createUser({
-        email,
-        password,
-        email_confirm: true
-      })
-
-      if (createError) {
-        return handleCORS(NextResponse.json({ error: createError.message }, { status: 400 }))
-      }
-
-      // Update profile
-      const { error: updateError } = await supabase
-        .from('profiles')
-        .update({
-          organization_id: profile.organization_id,
-          role_id: roleId,
-          full_name: fullName || null
-        })
-        .eq('id', newUser.user.id)
-
-      if (updateError) {
-        console.error('Profile update error:', updateError)
-      }
-
-      // Log audit
-      await logAudit(
-        supabase,
-        user.id,
-        profile.full_name || user.email,
-        'user.created',
-        'user',
-        newUser.user.id,
-        { email, role_id: roleId }
-      )
-
-      return handleCORS(NextResponse.json({
-        message: 'User created successfully',
-        user: newUser.user
-      }))
-    }
-
-    // ==================== PLATFORM ADMIN: IMPERSONATION ====================
-    // Platform Admin can impersonate org users
-    if (path === '/platform/impersonate' || path === '/platform/impersonate/') {
-      const { data: { user }, error: authError } = await supabase.auth.getUser()
-      
-      if (authError || !user) {
-        return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
-      }
-
-      // Verify platform admin
-      const { data: impersonatorProfile } = await supabase
-        .from('profiles')
-        .select('is_platform_admin')
-        .eq('id', user.id)
-        .single()
-
-      if (!impersonatorProfile?.is_platform_admin) {
-        return handleCORS(NextResponse.json({ 
-          error: 'Only Platform Admins can impersonate users' 
-        }, { status: 403 }))
-      }
-
-      const { targetUserId, organizationId } = body
-
-      if (!targetUserId || !organizationId) {
-        return handleCORS(NextResponse.json({ 
-          error: 'targetUserId and organizationId are required' 
-        }, { status: 400 }))
-      }
-
-      // Use SERVICE ROLE for impersonation operations
-      const adminClient = createAdminClient()
-
-      try {
-        // Verify target user exists and belongs to org
-        const { data: targetProfile, error: targetError } = await adminClient
-          .from('profiles')
-          .select('*, organization:organizations(name), role:roles(name)')
-          .eq('id', targetUserId)
-          .eq('organization_id', organizationId)
-          .single()
-
-        if (targetError || !targetProfile) {
-          throw new Error('Target user not found in specified organization')
-        }
-
-        // End any existing active impersonation sessions for this impersonator
-        await adminClient
-          .from('impersonation_sessions')
-          .update({ 
-            is_active: false, 
-            ended_at: new Date().toISOString() 
-          })
-          .eq('impersonator_user_id', user.id)
-          .eq('is_active', true)
-
-        // Create new impersonation session
-        const { data: session, error: sessionError } = await adminClient
-          .from('impersonation_sessions')
-          .insert({
-            impersonator_user_id: user.id,
-            impersonated_user_id: targetUserId,
-            impersonated_org_id: organizationId,
-            is_active: true
-          })
-          .select()
-          .single()
-
-        if (sessionError) {
           throw new Error('Failed to create impersonation session')
         }
 
@@ -692,7 +79,7 @@ export async function POST(request) {
     // End impersonation
     if (path === '/platform/end-impersonation' || path === '/platform/end-impersonation/') {
       const { data: { user }, error: authError } = await supabase.auth.getUser()
-      
+
       if (authError || !user) {
         return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
       }
@@ -703,9 +90,9 @@ export async function POST(request) {
         // End active impersonation sessions
         const { error: endError } = await adminClient
           .from('impersonation_sessions')
-          .update({ 
-            is_active: false, 
-            ended_at: new Date().toISOString() 
+          .update({
+            is_active: false,
+            ended_at: new Date().toISOString()
           })
           .eq('impersonator_user_id', user.id)
           .eq('is_active', true)
@@ -742,7 +129,7 @@ export async function POST(request) {
     // Save organization profile (draft or complete)
     if (path === '/organization/profile' || path === '/organization/profile/') {
       const { data: { user }, error: authError } = await supabase.auth.getUser()
-      
+
       if (authError || !user) {
         return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
       }
@@ -755,18 +142,18 @@ export async function POST(request) {
         .single()
 
       if (!userProfile || userProfile.is_platform_admin) {
-        return handleCORS(NextResponse.json({ 
-          error: 'Only organization users can update profile' 
+        return handleCORS(NextResponse.json({
+          error: 'Only organization users can update profile'
         }, { status: 403 }))
       }
 
       if (userProfile.role?.name !== 'Client Super Admin') {
-        return handleCORS(NextResponse.json({ 
-          error: 'Only Organization Super Admin can complete onboarding' 
+        return handleCORS(NextResponse.json({
+          error: 'Only Organization Super Admin can complete onboarding'
         }, { status: 403 }))
       }
 
-      const { 
+      const {
         sector,
         businessType,
         companyName,
@@ -816,7 +203,7 @@ export async function POST(request) {
         if (isComplete) {
           const { error: orgError } = await adminClient
             .from('organizations')
-            .update({ 
+            .update({
               onboarding_status: 'COMPLETED',
               updated_at: new Date().toISOString()
             })
@@ -874,7 +261,7 @@ export async function PUT(request) {
 
     // Protected routes
     const { data: { user }, error: authError } = await supabase.auth.getUser()
-    
+
     if (authError || !user) {
       return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
     }
@@ -938,7 +325,7 @@ export async function DELETE(request) {
     const supabase = await createServerSupabaseClient()
 
     const { data: { user }, error: authError } = await supabase.auth.getUser()
-    
+
     if (authError || !user) {
       return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
     }

@@ -368,3 +368,37 @@ The onboarding flow is **production-ready** and follows all your requirements! ð
 4. **Verify audit logs** are created
 
 Need help testing? Let me know!
+
+---
+
+## Projects & Campaigns (new)
+
+- Projects: Basic CRUD UI and API endpoints added. Single-image upload to Supabase Storage implemented (bucket `project-images`). See `app/dashboard/projects/page.js` for frontend and `/api/projects` endpoints in `app/api/[[...path]]/route.js`.
+- Campaigns: `campaigns` table and API endpoints added to support scheduling call campaigns. See `database/CREATE_CAMPAIGNS_TABLE.sql` and the `/api/campaigns` handlers in `app/api/[[...path]]/route.js`.
+
+Example: schedule a call campaign from frontend
+
+```javascript
+// POST to create a campaign
+await fetch('/api/campaigns', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    project_id: '<PROJECT_ID>',
+    name: 'Outbound call - warm leads',
+    description: 'Schedule call from calling agent',
+    scheduled_at: new Date(Date.now() + 3600 * 1000).toISOString(), // ISO datetime
+    metadata: { priority: 'high' }
+  })
+})
+```
+
+Server-side processing (suggestion)
+
+- Create a background job/cron that queries `campaigns` where `status='scheduled'` and `scheduled_at <= now()`.
+- For each due campaign, enqueue call tasks for your calling agent (e.g., push to a queue, call external telephony API), then update `campaigns.status` to `processing` or `completed`.
+
+If you want, I can add:
+- An API to list campaigns for a project (`GET /api/campaigns?project_id=...`).
+- A server-side worker example that enqueues calls to your calling agent.
+
