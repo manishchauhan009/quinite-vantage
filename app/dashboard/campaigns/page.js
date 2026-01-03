@@ -11,11 +11,13 @@ export default function CampaignsPage() {
   const [campaigns, setCampaigns] = useState([])
   const [projects, setProjects] = useState([])
   const [loading, setLoading] = useState(false)
-
   const [projectId, setProjectId] = useState('')
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [scheduledAt, setScheduledAt] = useState('')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+  const [timeStart, setTimeStart] = useState('')
+  const [timeEnd, setTimeEnd] = useState('')
   const [error, setError] = useState(null)
 
   useEffect(() => { fetchData() }, [])
@@ -40,8 +42,8 @@ export default function CampaignsPage() {
   async function createCampaign(e) {
     e?.preventDefault()
     setError(null)
-    if (!projectId || !scheduledAt) {
-      setError('Project and scheduled time are required')
+    if (!projectId || !startDate || !endDate || !timeStart || !timeEnd) {
+      setError('Project, start/end dates and time window are required')
       return
     }
 
@@ -49,7 +51,7 @@ export default function CampaignsPage() {
       const res = await fetch('/api/campaigns', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project_id: projectId, name, description, scheduled_at: new Date(scheduledAt).toISOString() })
+        body: JSON.stringify({ project_id: projectId, name, description, start_date: startDate, end_date: endDate, time_start: timeStart, time_end: timeEnd })
       })
 
       if (!res.ok) {
@@ -61,7 +63,10 @@ export default function CampaignsPage() {
       setCampaigns(prev => [payload.campaign, ...prev])
       setName('')
       setDescription('')
-      setScheduledAt('')
+      setStartDate('')
+      setEndDate('')
+      setTimeStart('')
+      setTimeEnd('')
     } catch (e) {
       console.error(e)
       setError(e.message || 'Create failed')
@@ -83,15 +88,18 @@ export default function CampaignsPage() {
           <CardDescription>View and schedule campaigns for projects</CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={createCampaign} className="grid gap-3 md:grid-cols-4 mb-6">
+          <form onSubmit={createCampaign} className="grid gap-3 md:grid-cols-6 mb-6">
             <select value={projectId} onChange={e => setProjectId(e.target.value)} className="rounded-md border px-3 py-2">
               <option value="">Select project</option>
               {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
             <Input placeholder="Campaign name" value={name} onChange={e => setName(e.target.value)} />
-            <Input type="datetime-local" value={scheduledAt} onChange={e => setScheduledAt(e.target.value)} />
+            <Input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} />
+            <Input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} />
+            <Input type="time" value={timeStart} onChange={e => setTimeStart(e.target.value)} />
+            <Input type="time" value={timeEnd} onChange={e => setTimeEnd(e.target.value)} />
             <Button type="submit" className="gap-2">Create Campaign</Button>
-            <div className="md:col-span-4">
+            <div className="md:col-span-6">
               <Textarea placeholder="Description (optional)" value={description} onChange={e => setDescription(e.target.value)} />
             </div>
           </form>
@@ -114,7 +122,7 @@ export default function CampaignsPage() {
                 <div>
                   <h3 className="font-medium text-gray-900">{c.name}</h3>
                   <p className="text-sm text-gray-600">{c.description}</p>
-                  <p className="text-sm text-gray-500 mt-1">Scheduled: {c.scheduled_at ? new Date(c.scheduled_at).toLocaleString() : '—'}</p>
+                  <p className="text-sm text-gray-500 mt-1">Runs: {c.start_date ? new Date(c.start_date).toLocaleDateString() : '—'} — {c.end_date ? new Date(c.end_date).toLocaleDateString() : '—'} ({c.time_start || '—'} - {c.time_end || '—'})</p>
                 </div>
                 <div className="text-sm text-gray-600">Status: {c.status}</div>
               </div>

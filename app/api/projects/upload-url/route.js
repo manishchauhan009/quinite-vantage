@@ -16,7 +16,7 @@ export async function POST(request) {
   try {
     const supabase = await createServerSupabaseClient()
 
-    // 1️⃣ Auth check
+    // 🔐 Auth
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) {
       return handleCORS(
@@ -24,7 +24,6 @@ export async function POST(request) {
       )
     }
 
-    // 2️⃣ Read body
     const { fileName, contentType } = await request.json()
     if (!fileName || !contentType) {
       return handleCORS(
@@ -35,7 +34,6 @@ export async function POST(request) {
       )
     }
 
-    // 3️⃣ Get user org
     const { data: profile } = await supabase
       .from('profiles')
       .select('organization_id')
@@ -48,11 +46,9 @@ export async function POST(request) {
       )
     }
 
-    // 4️⃣ Build file path
     const ext = fileName.split('.').pop()
     const imagePath = `projects/${profile.organization_id}/${crypto.randomUUID()}.${ext}`
 
-    // 5️⃣ Create signed upload URL
     const { data, error } = await supabase.storage
       .from('project-images')
       .createSignedUploadUrl(imagePath)
@@ -63,7 +59,6 @@ export async function POST(request) {
       )
     }
 
-    // 6️⃣ Public URL
     const { data: publicUrl } = supabase.storage
       .from('project-images')
       .getPublicUrl(imagePath)

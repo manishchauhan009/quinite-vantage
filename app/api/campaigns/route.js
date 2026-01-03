@@ -34,15 +34,20 @@ export async function POST(request) {
     if (authError || !user) return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
 
     const { data: profile } = await supabase.from('profiles').select('organization_id, full_name').eq('id', user.id).single()
-    const { project_id, name, description, scheduled_at, metadata } = body
-    if (!project_id || !scheduled_at) return handleCORS(NextResponse.json({ error: 'project_id and scheduled_at are required' }, { status: 400 }))
+    const { project_id, name, description, start_date, end_date, time_start, time_end, metadata } = body
+    if (!project_id || !start_date || !end_date || !time_start || !time_end) {
+      return handleCORS(NextResponse.json({ error: 'project_id, start_date, end_date, time_start and time_end are required' }, { status: 400 }))
+    }
 
     const payload = {
       organization_id: profile.organization_id,
       project_id,
       name: name || 'Call Campaign',
       description: description || null,
-      scheduled_at,
+      start_date,
+      end_date,
+      time_start,
+      time_end,
       status: 'scheduled',
       metadata: metadata || null,
       created_by: user.id
